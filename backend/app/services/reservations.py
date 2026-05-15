@@ -2,6 +2,15 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Dict, Any, List
 
+# Reporting period for the revenue dashboard.
+# The seed data covers March 2024, so the dashboard reports that month.
+# IMPORTANT: month boundaries are evaluated in each property's *local*
+# timezone (see the query in calculate_total_revenue), not in UTC, so a
+# reservation like 2024-02-29 23:30:00+00 (which is 2024-03-01 00:30 in
+# Europe/Paris) is correctly attributed to March for Client A.
+REPORT_YEAR = 2024
+REPORT_MONTH = 3
+
 async def calculate_monthly_revenue(property_id: str, month: int, year: int, db_session=None) -> Decimal:
     """
     Calculates revenue for a specific month.
@@ -47,20 +56,40 @@ async def calculate_total_revenue(property_id: str, tenant_id: str) -> Dict[str,
             async with db_pool.get_session() as session:
                 # Use SQLAlchemy text for raw SQL
                 from sqlalchemy import text
-                
+
+                # Month boundaries for the reporting period. These are naive
+                # wall-clock timestamps because the comparison below converts
+                # check_in_date into the property's local time first.
+                period_start = datetime(REPORT_YEAR, REPORT_MONTH, 1)
+                if REPORT_MONTH < 12:
+                    period_end = datetime(REPORT_YEAR, REPORT_MONTH + 1, 1)
+                else:
+                    period_end = datetime(REPORT_YEAR + 1, 1, 1)
+
+                # Join properties to read each property's timezone, then
+                # convert the UTC-stored check_in_date into that local time
+                # before applying the month boundaries. This is what fixes
+                # Client A's "March totals differ" report.
                 query = text("""
-                    SELECT 
-                        property_id,
-                        SUM(total_amount) as total_revenue,
+                    SELECT
+                        r.property_id,
+                        SUM(r.total_amount) as total_revenue,
                         COUNT(*) as reservation_count
-                    FROM reservations 
-                    WHERE property_id = :property_id AND tenant_id = :tenant_id
-                    GROUP BY property_id
+                    FROM reservations r
+                    JOIN properties p
+                      ON p.id = r.property_id AND p.tenant_id = r.tenant_id
+                    WHERE r.property_id = :property_id
+                      AND r.tenant_id = :tenant_id
+                      AND (r.check_in_date AT TIME ZONE p.timezone) >= :period_start
+                      AND (r.check_in_date AT TIME ZONE p.timezone) <  :period_end
+                    GROUP BY r.property_id
                 """)
-                
+
                 result = await session.execute(query, {
-                    "property_id": property_id, 
-                    "tenant_id": tenant_id
+                    "property_id": property_id,
+                    "tenant_id": tenant_id,
+                    "period_start": period_start,
+                    "period_end": period_end,
                 })
                 row = result.fetchone()
                 
@@ -91,8 +120,11 @@ async def calculate_total_revenue(property_id: str, tenant_id: str) -> Dict[str,
         # Create property-specific mock data for testing when DB is unavailable
         # This ensures each property shows different figures
         mock_data = {
-            'prop-001': {'total': '1000.00', 'count': 3},
-            'prop-002': {'total': '4975.50', 'count': 4}, 
+            # prop-001 (tenant-a, Europe/Paris): timezone-aware March total
+            # includes res-tz-1 ($1250.000, 2024-02-29 23:30+00 = Mar 1 in Paris)
+            # plus the three ~333 bookings -> 2250.000 across 4 reservations.
+            'prop-001': {'total': '2250.000', 'count': 4},
+            'prop-002': {'total': '4975.50', 'count': 4},
             'prop-003': {'total': '6100.50', 'count': 2},
             'prop-004': {'total': '1776.50', 'count': 4},
             'prop-005': {'total': '3256.00', 'count': 3}
