@@ -120,10 +120,7 @@ async def calculate_total_revenue(property_id: str, tenant_id: str) -> Dict[str,
         # Create property-specific mock data for testing when DB is unavailable
         # This ensures each property shows different figures
         mock_data = {
-            # prop-001 (tenant-a, Europe/Paris): timezone-aware March total
-            # includes res-tz-1 ($1250.000, 2024-02-29 23:30+00 = Mar 1 in Paris)
-            # plus the three ~333 bookings -> 2250.000 across 4 reservations.
-            'prop-001': {'total': '2250.000', 'count': 4},
+            'prop-001': {'total': '1000.00', 'count': 3},
             'prop-002': {'total': '4975.50', 'count': 4},
             'prop-003': {'total': '6100.50', 'count': 2},
             'prop-004': {'total': '1776.50', 'count': 4},
